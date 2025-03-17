@@ -2,93 +2,55 @@ mod controls;
 mod font;
 mod lights;
 mod screen;
-use crate::controls::{Buttons, PadEventType};
-use crate::font::Font;
-use crate::lights::{Brightness, Lights, PadColors};
-use crate::screen::Screen;
-use alsa::seq;
+mod settings;
+mod selftest;
+
+use controls::{Buttons, PadEventType};
+use font::Font;
+use lights::{Brightness, Lights, PadColors};
+use screen::Screen;
+use settings::Settings;
 use hidapi::{HidDevice, HidResult};
-use midly::{live::LiveEvent, num::u7, MidiMessage};
-use std::ffi::CString;
-use std::{thread, time};
-use midir::MidiOutput;
 use midir::os::unix::VirtualOutput;
-
-fn self_test(device: &HidDevice, screen: &mut Screen, lights: &mut Lights) -> HidResult<()> {
-    Font::write_digit(screen, 0, 0, 1, 4);
-    screen.write(&device)?;
-    thread::sleep(time::Duration::from_millis(100));
-    Font::write_digit(screen, 0, 32, 3, 4);
-    screen.write(&device)?;
-    thread::sleep(time::Duration::from_millis(100));
-    Font::write_digit(screen, 0, 64, 3, 4);
-    screen.write(&device)?;
-    thread::sleep(time::Duration::from_millis(100));
-    Font::write_digit(screen, 0, 96, 7, 4);
-    screen.write(&device)?;
-
-    for i in 0..39 {
-        lights.set_button(num::FromPrimitive::from_u32(i).unwrap(), Brightness::Bright);
-        lights.write(&device)?;
-        lights.set_button(num::FromPrimitive::from_u32(i).unwrap(), Brightness::Normal);
-        lights.write(&device)?;
-        lights.set_button(num::FromPrimitive::from_u32(i).unwrap(), Brightness::Dim);
-        lights.write(&device)?;
-        // thread::sleep(time::Duration::from_millis(100));
-    }
-    for i in 0..16 {
-        // let color: PadColors = PadColors::Blue;
-        let color: PadColors = num::FromPrimitive::from_usize(i + 2).unwrap();
-        lights.set_pad(i, color, Brightness::Bright);
-        lights.write(&device)?;
-        let color: PadColors = num::FromPrimitive::from_usize(i + 1).unwrap();
-        lights.set_pad(i, color, Brightness::Normal);
-        lights.write(&device)?;
-        let color: PadColors = num::FromPrimitive::from_usize(i + 1).unwrap();
-        lights.set_pad(i, color, Brightness::Dim);
-        lights.write(&device)?;
-        // thread::sleep(time::Duration::from_millis(1000));
-    }
-    for i in 0..25 {
-        lights.set_slider(i, Brightness::Bright);
-        lights.write(&device)?;
-        lights.set_slider(i, Brightness::Normal);
-        lights.write(&device)?;
-        lights.set_slider(i, Brightness::Dim);
-        lights.write(&device)?;
-        // thread::sleep(time::Duration::from_millis(1000));
-    }
-    lights.reset();
-    lights.write(&device)?;
-
-    screen.reset();
-    screen.write(&device)?;
-
-    Ok(())
-}
+use midir::MidiOutput;
+use midly::{live::LiveEvent, num::u7, MidiMessage};
+use std::collections::HashMap;
+use std::{thread, time};
+use selftest::self_test;
 
 fn main() -> HidResult<()> {
-    let notemaps: [u7; 16] = [
-        49.into(),
-        27.into(),
-        31.into(),
-        57.into(),
-        48.into(),
-        47.into(),
-        43.into(),
-        59.into(),
-        36.into(),
-        38.into(),
-        46.into(),
-        51.into(),
-        36.into(),
-        38.into(),
-        42.into(),
-        44.into(),
-    ];
+    let settings = Settings::new().unwrap();
+    let base_key:u8 = settings.main.base_key.parse().unwrap();
+
+    let mut key_map: Vec<u7> = Vec::with_capacity(16);
+    for i in 0..16u8 {
+        let key_num = base_key + i;
+        key_map.insert(i as usize, key_num.into());
+    }
+
+    let pad_map = HashMap::from([
+        (0, 13),
+        (1, 14),
+        (2, 15),
+        (3, 16),
+        (4, 9),
+        (5, 10),
+        (6, 11),
+        (7, 12),
+        (8, 5),
+        (9, 6),
+        (10, 7),
+        (11, 8),
+        (12, 1),
+        (13, 2),
+        (14, 3),
+        (15, 4),
+    ]);
 
     let output = MidiOutput::new("Maschine Mikro MK3").expect("Couldn't open MIDI output");
-    let mut port = output.create_virtual("Maschine Mikro MK3 MIDI Out").expect("Couldn't create virtual port");
+    let mut port = output
+        .create_virtual("Maschine Mikro MK3 MIDI Out")
+        .expect("Couldn't create virtual port");
 
     let api = hidapi::HidApi::new()?;
     #[allow(non_snake_case)]
@@ -125,7 +87,7 @@ fn main() -> HidResult<()> {
                     let status = buf[i + 1] & (1 << j);
                     let status = status > 0;
                     if status {
-                        println!("{:?}", button);
+                        //println!("{:?}", button);
                     }
                     if lights.button_has_light(button) {
                         let light_status = lights.get_button(button) != Brightness::Off;
@@ -144,10 +106,10 @@ fn main() -> HidResult<()> {
                 }
             }
             let encoder_val = buf[7];
-            println!("Encoder: {}", encoder_val);
+            //println!("Encoder: {}", encoder_val);
             let slider_val = buf[10];
             if slider_val != 0 {
-                println!("Slider: {}", slider_val);
+                //println!("Slider: {}", slider_val);
                 let cnt = (slider_val as i32 - 1 + 5) * 25 / 200 - 1;
                 for i in 0..25 {
                     let b = match cnt - i {
@@ -165,12 +127,12 @@ fn main() -> HidResult<()> {
                 let idx = buf[i];
                 let evt = buf[i + 1] & 0xf0;
                 let val = ((buf[i + 1] as u16 & 0x0f) << 8) + buf[i + 2] as u16;
-                if i > 1 && idx == 0 && evt as u8 == 0 && val == 0 {
+                if i > 1 && idx == 0 && evt == 0 && val == 0 {
                     break;
                 }
                 let pad_evt: PadEventType = num::FromPrimitive::from_u8(evt).unwrap();
                 // if evt != PadEventType::Aftertouch {
-                println!("Pad {}: {:?} @ {}", idx, pad_evt, val);
+                //println!("Pad {}: {:?} @ {}", idx, pad_evt, val);
                 // }
                 let (_, prev_b) = lights.get_pad(idx as usize);
                 let b = match pad_evt {
@@ -190,10 +152,9 @@ fn main() -> HidResult<()> {
                     lights.set_pad(idx as usize, PadColors::Blue, b);
                     changed_lights = true;
                 }
-                // let padids = [13, 14, 15, 16, 9, 10, 11, 12, 5, 6, 7, 8, 1, 2, 3, 4];
-                // let note = padids[idx as usize]-1+36;
 
-                let note = notemaps[idx as usize];
+                let pad_num = pad_map[&idx];
+                let note = key_map.get(pad_num - 1).unwrap();
                 let mut velocity = (val >> 5) as u8;
                 if val > 0 && velocity == 0 {
                     velocity = 1;
@@ -201,14 +162,14 @@ fn main() -> HidResult<()> {
 
                 let event = match pad_evt {
                     PadEventType::NoteOn | PadEventType::PressOn => Some(MidiMessage::NoteOn {
-                        key: note,
+                        key: *note,
                         vel: velocity.into(),
                     }),
                     PadEventType::NoteOff | PadEventType::PressOff => Some(MidiMessage::NoteOff {
-                        key: note,
+                        key: *note,
                         vel: velocity.into(),
                     }),
-                    _ => {None}
+                    _ => None,
                 };
 
                 if let Some(evt) = event {
