@@ -2,25 +2,35 @@ mod controls;
 mod font;
 mod lights;
 mod screen;
-mod settings;
 mod selftest;
+mod settings;
 
 use controls::{Buttons, PadEventType};
-use font::Font;
 use lights::{Brightness, Lights, PadColors};
-use screen::Screen;
-use settings::Settings;
-use hidapi::{HidDevice, HidResult};
 use midir::os::unix::VirtualOutput;
-use midir::MidiOutput;
+use midir::{MidiOutput, MidiOutputConnection, MidiOutputPort};
 use midly::{live::LiveEvent, num::u7, MidiMessage};
-use std::collections::HashMap;
-use std::{thread, time};
+use screen::Screen;
 use selftest::self_test;
+use settings::Settings;
+use std::collections::HashMap;
+use std::error::Error;
 
-fn main() -> HidResult<()> {
-    let settings = Settings::new().unwrap();
-    let base_key:u8 = settings.main.base_key.parse().unwrap();
+fn send_midi(conn: &mut MidiOutputConnection, msg: MidiMessage) {
+    let l_ev = LiveEvent::Midi {
+        channel: 0.into(),
+        message: msg,
+    };
+    let mut buf = Vec::new();
+    let write_result = l_ev.write(&mut buf);
+    if write_result.is_ok() {
+        let _ = conn.send(&buf[..]);
+    }
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let settings = Settings::new()?;
+    let base_key: u8 = settings.main.base_key.parse()?;
 
     let mut key_map: Vec<u7> = Vec::with_capacity(16);
     for i in 0..16u8 {
@@ -48,14 +58,13 @@ fn main() -> HidResult<()> {
     ]);
 
     let output = MidiOutput::new("Maschine Mikro MK3").expect("Couldn't open MIDI output");
-    let mut port = output
+    let mut midi_conn = output
         .create_virtual("Maschine Mikro MK3 MIDI Out")
         .expect("Couldn't create virtual port");
 
     let api = hidapi::HidApi::new()?;
-    #[allow(non_snake_case)]
-    let (VID, PID) = (0x17cc, 0x1700);
-    let device = api.open(VID, PID)?;
+    let (vid, pid) = (0x17cc, 0x1700);
+    let device = api.open(vid, pid)?;
 
     device.set_blocking_mode(false)?;
 
@@ -87,7 +96,7 @@ fn main() -> HidResult<()> {
                     let status = buf[i + 1] & (1 << j);
                     let status = status > 0;
                     if status {
-                        //println!("{:?}", button);
+                        println!("{:?}", button);
                     }
                     if lights.button_has_light(button) {
                         let light_status = lights.get_button(button) != Brightness::Off;
@@ -106,10 +115,18 @@ fn main() -> HidResult<()> {
                 }
             }
             let encoder_val = buf[7];
-            //println!("Encoder: {}", encoder_val);
+            println!("Encoder: {}", encoder_val);
+
             let slider_val = buf[10];
             if slider_val != 0 {
-                //println!("Slider: {}", slider_val);
+                println!("Slider: {}", slider_val);
+                let midi_val = slider_val as u32 * 127 / 200;
+                let msg = MidiMessage::Controller {
+                    controller: 1.into(),
+                    value: (midi_val as u8).into()
+                };
+                send_midi(&mut midi_conn, msg);
+
                 let cnt = (slider_val as i32 - 1 + 5) * 25 / 200 - 1;
                 for i in 0..25 {
                     let b = match cnt - i {
@@ -121,7 +138,9 @@ fn main() -> HidResult<()> {
                 }
                 changed_lights = true;
             }
-        } else if buf[0] == 0x02 {
+        }
+
+        if buf[0] == 0x02 {
             // pad mode
             for i in (1..buf.len()).step_by(3) {
                 let idx = buf[i];
@@ -130,10 +149,8 @@ fn main() -> HidResult<()> {
                 if i > 1 && idx == 0 && evt == 0 && val == 0 {
                     break;
                 }
-                let pad_evt: PadEventType = num::FromPrimitive::from_u8(evt).unwrap();
-                // if evt != PadEventType::Aftertouch {
-                //println!("Pad {}: {:?} @ {}", idx, pad_evt, val);
-                // }
+                let pad_evt: PadEventType =
+                    num::FromPrimitive::from_u8(evt).ok_or("Couldn't read pad event type")?;
                 let (_, prev_b) = lights.get_pad(idx as usize);
                 let b = match pad_evt {
                     PadEventType::NoteOn | PadEventType::PressOn => Brightness::Normal,
@@ -145,16 +162,17 @@ fn main() -> HidResult<()> {
                             Brightness::Off
                         }
                     }
-                    #[allow(unreachable_patterns)]
-                    _ => prev_b,
                 };
+
                 if prev_b != b {
                     lights.set_pad(idx as usize, PadColors::Blue, b);
                     changed_lights = true;
                 }
 
                 let pad_num = pad_map[&idx];
-                let note = key_map.get(pad_num - 1).unwrap();
+                let note = key_map
+                    .get(pad_num - 1)
+                    .ok_or("Couldn't find key for pad")?;
                 let mut velocity = (val >> 5) as u8;
                 if val > 0 && velocity == 0 {
                     velocity = 1;
@@ -169,23 +187,20 @@ fn main() -> HidResult<()> {
                         key: *note,
                         vel: velocity.into(),
                     }),
-                    _ => None,
+                    PadEventType::Aftertouch => Some(MidiMessage::Aftertouch {
+                        key: *note,
+                        vel: velocity.into(),
+                    })
                 };
 
-                if let Some(evt) = event {
-                    let l_ev = LiveEvent::Midi {
-                        channel: 0.into(),
-                        message: evt,
-                    };
-                    let mut buf = Vec::new();
-                    l_ev.write(&mut buf).unwrap();
-                    port.send(&buf[..]).unwrap()
+                if let Some(msg) = event {
+                    send_midi(&mut midi_conn, msg);
                 }
             }
         }
+
         if changed_lights {
             lights.write(&device)?;
         }
-        // println!("{} {:?}", size, buf);
     }
 }
