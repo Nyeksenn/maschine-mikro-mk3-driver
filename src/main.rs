@@ -5,7 +5,7 @@ mod screen;
 mod selftest;
 mod settings;
 
-use controls::{Buttons, PadEventType};
+use controls::{ButtonType, PadEventType, get_encoder_dir, EncoderDirection};
 use lights::{Brightness, Lights, PadColors};
 use midir::os::unix::VirtualOutput;
 use midir::{MidiOutput, MidiOutputConnection, MidiOutputPort};
@@ -15,6 +15,7 @@ use selftest::self_test;
 use settings::Settings;
 use std::collections::HashMap;
 use std::error::Error;
+
 
 fn send_midi(conn: &mut MidiOutputConnection, msg: MidiMessage) {
     let l_ev = LiveEvent::Midi {
@@ -31,6 +32,8 @@ fn send_midi(conn: &mut MidiOutputConnection, msg: MidiMessage) {
 fn main() -> Result<(), Box<dyn Error>> {
     let settings = Settings::new()?;
     let base_key: u8 = settings.main.base_key.parse()?;
+    let mut encoder_pos: u8 = 200;
+    let mut volume: u8 = 100;
 
     let mut key_map: Vec<u7> = Vec::with_capacity(16);
     for i in 0..16u8 {
@@ -81,14 +84,25 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
 
         let mut changed_lights = false;
+
+        let encoder_val = buf[7];
+        if encoder_pos == 200 {
+            encoder_pos = encoder_val;
+        }
+        println!("Encoder: {}", encoder_val);
+
+        println!("Volume Value: {}", volume);
+
         if buf[0] == 0x01 {
             // button mode
             for i in 0..6 {
+                // every i is a different button
+                
                 // bytes
                 for j in 0..8 {
                     // bits
                     let idx = i * 8 + j;
-                    let button: Option<Buttons> = num::FromPrimitive::from_usize(idx);
+                    let button: Option<ButtonType> = num::FromPrimitive::from_usize(idx);
                     let button = match button {
                         Some(val) => val,
                         None => continue,
@@ -96,8 +110,29 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let status = buf[i + 1] & (1 << j);
                     let status = status > 0;
                     if status {
-                        println!("{:?}", button);
+                        println!("Button: {:?}", button);
                     }
+
+                    if button == ButtonType::EncoderTouch {
+                        let dir = get_encoder_dir(encoder_pos, encoder_val);
+                        match dir {
+                            EncoderDirection::Left => {
+                                volume = volume.saturating_sub(1);
+                            },
+                            EncoderDirection::Right => {
+                                if volume < 127 {
+                                    volume += 1;
+                                }
+                            },
+                            EncoderDirection::Unchanged => {}
+                        }
+                        let msg = MidiMessage::Controller {
+                            controller: 7.into(),
+                            value: volume.into(),
+                        };
+                        send_midi(&mut midi_conn, msg);
+                    }
+
                     if lights.button_has_light(button) {
                         let light_status = lights.get_button(button) != Brightness::Off;
                         if status != light_status {
@@ -114,8 +149,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
             }
-            let encoder_val = buf[7];
-            println!("Encoder: {}", encoder_val);
 
             let slider_val = buf[10];
             if slider_val != 0 {
@@ -202,5 +235,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         if changed_lights {
             lights.write(&device)?;
         }
+
+        encoder_pos = encoder_val;
     }
 }

@@ -1,5 +1,5 @@
 use num_derive::FromPrimitive;
-use crate::controls::Buttons;
+use crate::controls::ButtonType;
 use hidapi::{HidDevice, HidResult};
 
 #[derive(FromPrimitive, Debug, Clone, Copy, PartialEq)]
@@ -45,18 +45,18 @@ impl Lights {
         self.status.fill(0);
     }
 
-    pub fn get_button(&self, id: Buttons) -> Brightness {
+    pub fn get_button(&self, id: ButtonType) -> Brightness {
         num::FromPrimitive::from_u8(self.status[id as usize]).unwrap()
     }
 
-    pub fn button_has_light(&self, id: Buttons) -> bool {
+    pub fn button_has_light(&self, id: ButtonType) -> bool {
         match id {
-            Buttons::EncoderTouch | Buttons::EncoderPress => false,
+            ButtonType::EncoderTouch | ButtonType::EncoderPress => false,
             _ => true,
         }
     }
 
-    pub fn set_button(&mut self, id: Buttons, b: Brightness) {
+    pub fn set_button(&mut self, id: ButtonType, b: Brightness) {
         self.status[id as usize] = b as u8;
     }
 

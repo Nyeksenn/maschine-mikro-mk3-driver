@@ -1,7 +1,7 @@
 use num_derive::FromPrimitive;
 
 #[derive(FromPrimitive, Debug, Clone, Copy, PartialEq)]
-pub enum Buttons {
+pub enum ButtonType {
     Maschine = 0,
     Star = 1,
     Browse = 2,
@@ -62,4 +62,22 @@ pub enum PadEventType {
     Aftertouch = 0x40,
     PressOff = 0x20,
     PressOn = 0x00,
+}
+
+#[derive(FromPrimitive, Debug, Clone, Copy, PartialEq)]
+pub enum EncoderDirection {
+    Unchanged,
+    Right,
+    Left,
+}
+
+
+pub fn get_encoder_dir(old: u8, new: u8) -> EncoderDirection {
+    if new == (old + 1) || (old == 15 && new == 0) {
+        EncoderDirection::Right
+    } else if new == (old.saturating_sub(1)) || (old == 0 && new == 15) {
+        EncoderDirection::Left
+    } else {
+        EncoderDirection::Unchanged
+    }
 }
