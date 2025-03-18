@@ -50,10 +50,7 @@ impl Lights {
     }
 
     pub fn button_has_light(&self, id: ButtonType) -> bool {
-        match id {
-            ButtonType::EncoderTouch | ButtonType::EncoderPress => false,
-            _ => true,
-        }
+        !matches!(id, ButtonType::EncoderTouch | ButtonType::EncoderPress)
     }
 
     pub fn set_button(&mut self, id: ButtonType, b: Brightness) {
@@ -89,7 +86,7 @@ impl Lights {
                 _ => Brightness::Off,
             },
         };
-        return (color, b);
+        (color, b)
     }
 
     pub fn write(&self, h: &HidDevice) -> HidResult<()> {

@@ -1,11 +1,8 @@
 use embedded_graphics::geometry::Dimensions;
-use embedded_graphics::mono_font::ascii::FONT_8X13;
-use embedded_graphics::mono_font::MonoTextStyle;
 use embedded_graphics::Pixel;
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::{Rectangle};
-use embedded_graphics::text::Text;
 use hidapi::{HidDevice, HidError, HidResult};
 
 const HEADER_HI: [u8; 9] = [0xe0, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x02, 0x00];

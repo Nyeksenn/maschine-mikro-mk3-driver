@@ -17,7 +17,7 @@ use selftest::self_test;
 use settings::Settings;
 use std::collections::HashMap;
 use std::error::Error;
-use embedded_graphics::mono_font::ascii::FONT_8X13;
+use embedded_graphics::mono_font::ascii::{FONT_9X15};
 use embedded_graphics::mono_font::MonoTextStyle;
 use embedded_graphics::primitives::Rectangle;
 use embedded_graphics::text::Text;
@@ -83,15 +83,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut fbuf_data = [BinaryColor::Off; 128 * 32];
     let mut fbuf_handle = FrameBuf::new(&mut fbuf_data, 128, 32);
 
-    let style = MonoTextStyle::new(&FONT_8X13, BinaryColor::On);
+    let style = MonoTextStyle::new(&FONT_9X15, BinaryColor::On);
 
     let mut lights = Lights::new();
 
     self_test(&device, &mut display, &mut lights)?;
 
-    Text::new("Welcome!", Point::new(8, 20), style).draw(&mut fbuf_handle)?;
+    Text::new("MIDI Mode", Point::new(8, 10), style).draw(&mut fbuf_handle)?;
+    Text::new("Base Key: C2", Point::new(8, 28), style).draw(&mut fbuf_handle)?;
     let area = Rectangle::new(Point::new(0, 0), fbuf_handle.size());
-    display.fill_contiguous(&area, *fbuf_handle.data).unwrap();
+    display.fill_contiguous(&area, *fbuf_handle.data)?;
 
     let mut buf = [0u8; 64];
     loop {
@@ -123,9 +124,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                     };
                     let status = buf[i + 1] & (1 << j);
                     let status = status > 0;
-                    if status {
-                        println!("Button: {:?}", button);
-                    }
+                    // if status {
+                    //     println!("Button: {:?}", button);
+                    // }
 
                     if button == ButtonType::EncoderTouch {
                         let dir = get_encoder_dir(encoder_pos, encoder_val);
@@ -145,7 +146,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                             value: volume.into(),
                         };
                         send_midi(&mut midi_conn, msg);
-                        display.clear(BinaryColor::Off)?;
                     }
 
                     if lights.button_has_light(button) {
@@ -167,7 +167,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             let slider_val = buf[10];
             if slider_val != 0 {
-                println!("Slider: {}", slider_val);
                 let midi_val = slider_val as u32 * 127 / 200;
                 let msg = MidiMessage::Controller {
                     controller: 1.into(),
