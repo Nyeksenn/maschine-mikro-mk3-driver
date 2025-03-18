@@ -1,47 +1,88 @@
-use hidapi::{HidDevice, HidResult};
+use embedded_graphics::geometry::Dimensions;
+use embedded_graphics::mono_font::ascii::FONT_8X13;
+use embedded_graphics::mono_font::MonoTextStyle;
+use embedded_graphics::Pixel;
+use embedded_graphics::pixelcolor::BinaryColor;
+use embedded_graphics::prelude::*;
+use embedded_graphics::primitives::{Rectangle};
+use embedded_graphics::text::Text;
+use hidapi::{HidDevice, HidError, HidResult};
 
 const HEADER_HI: [u8; 9] = [0xe0, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x02, 0x00];
 const HEADER_LO: [u8; 9] = [0xe0, 0x00, 0x00, 0x02, 0x00, 0x80, 0x00, 0x02, 0x00];
 
-pub struct Screen {
+pub struct Screen<'a> {
     buffer: [u8; 512],
+    device: &'a HidDevice,
 }
 
-impl Screen {
-    pub fn new() -> Screen {
+impl Screen<'_> {
+    pub fn new(device: &HidDevice) -> Screen {
         Screen {
             buffer: [0xff; 512],
+            device
         }
     }
 
-    pub fn reset(&mut self) {
-        self.buffer.fill(0xff);
+    fn reset(&mut self, color: BinaryColor) {
+        if color.is_off() {
+            self.buffer.fill(0xff);
+        }
+
+        if color.is_on() {
+            self.buffer.fill(0x00);
+        }
     }
 
-    #[allow(dead_code)]
-    pub fn get(&self, i: usize, j: usize) -> bool {
-        let chunk = i / 8;
-        let imod = i % 8;
-        let idx = chunk * 128 + j;
-        let val = self.buffer[idx] & (1 << imod);
-        return val == 0;
+    fn write(&self) -> HidResult<()> {
+        self.device.write(&[&HEADER_HI, &self.buffer[..256]].concat())?;
+        self.device.write(&[&HEADER_LO, &self.buffer[256..]].concat())?;
+        Ok(())
     }
 
-    pub fn set(&mut self, i: usize, j: usize, val: bool) {
-        let chunk = i / 8;
-        let imod: u8 = (i % 8) as u8;
-        let idx = chunk * 128 + j;
-        let mask: u8 = 1 << imod;
-        if val {
+    fn set_pixel(&mut self, coord: Point, color: BinaryColor) {
+        let x = coord.x as usize;
+        let y = coord.y as usize;
+        let chunk = y / 8;
+        let y_mod: u8 = y as u8 % 8;
+        let idx = chunk * 128 + x;
+        let mask: u8 = 1 << y_mod;
+        if color.is_on() {
             self.buffer[idx] &= !mask;
         } else {
             self.buffer[idx] |= mask;
         }
     }
+}
 
-    pub fn write(&self, h: &HidDevice) -> HidResult<()> {
-        h.write(&[&HEADER_HI, &self.buffer[..256]].concat())?;
-        h.write(&[&HEADER_LO, &self.buffer[256..]].concat())?;
+impl Dimensions for Screen<'_> {
+    fn bounding_box(&self) -> Rectangle {
+        Rectangle {
+            top_left: Point{ x: 0, y: 0},
+
+            size: Size{width: 128, height: 32},
+        }
+    }
+}
+
+impl DrawTarget for Screen<'_> {
+    type Color = BinaryColor;
+    type Error = HidError;
+
+    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item=Pixel<Self::Color>>
+    {
+        for Pixel(coord, color) in pixels.into_iter() {
+            self.set_pixel(coord, color);
+        }
+        self.write()?;
+        Ok(())
+    }
+
+    fn clear(&mut self, color: Self::Color) -> Result<(), Self::Error> {
+        self.reset(color);
+        self.write()?;
         Ok(())
     }
 }

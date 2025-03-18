@@ -5,17 +5,23 @@ mod screen;
 mod selftest;
 mod settings;
 
-use controls::{ButtonType, PadEventType, get_encoder_dir, EncoderDirection};
+use controls::{get_encoder_dir, ButtonType, EncoderDirection, PadEventType};
+use embedded_graphics::pixelcolor::BinaryColor;
+use embedded_graphics::prelude::*;
 use lights::{Brightness, Lights, PadColors};
 use midir::os::unix::VirtualOutput;
-use midir::{MidiOutput, MidiOutputConnection, MidiOutputPort};
+use midir::{MidiOutput, MidiOutputConnection};
 use midly::{live::LiveEvent, num::u7, MidiMessage};
 use screen::Screen;
 use selftest::self_test;
 use settings::Settings;
 use std::collections::HashMap;
 use std::error::Error;
-
+use embedded_graphics::mono_font::ascii::FONT_8X13;
+use embedded_graphics::mono_font::MonoTextStyle;
+use embedded_graphics::primitives::Rectangle;
+use embedded_graphics::text::Text;
+use embedded_graphics_framebuf::FrameBuf;
 
 fn send_midi(conn: &mut MidiOutputConnection, msg: MidiMessage) {
     let l_ev = LiveEvent::Midi {
@@ -71,10 +77,21 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     device.set_blocking_mode(false)?;
 
-    let mut screen = Screen::new();
+    let mut screen = Screen::new(&device);
+    let mut display = screen.clipped(&screen.bounding_box());
+
+    let mut fbuf_data = [BinaryColor::Off; 128 * 32];
+    let mut fbuf_handle = FrameBuf::new(&mut fbuf_data, 128, 32);
+
+    let style = MonoTextStyle::new(&FONT_8X13, BinaryColor::On);
+
     let mut lights = Lights::new();
 
-    self_test(&device, &mut screen, &mut lights)?;
+    self_test(&device, &mut display, &mut lights)?;
+
+    Text::new("Welcome!", Point::new(8, 20), style).draw(&mut fbuf_handle)?;
+    let area = Rectangle::new(Point::new(0, 0), fbuf_handle.size());
+    display.fill_contiguous(&area, *fbuf_handle.data).unwrap();
 
     let mut buf = [0u8; 64];
     loop {
@@ -89,15 +106,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         if encoder_pos == 200 {
             encoder_pos = encoder_val;
         }
-        println!("Encoder: {}", encoder_val);
-
-        println!("Volume Value: {}", volume);
 
         if buf[0] == 0x01 {
             // button mode
             for i in 0..6 {
                 // every i is a different button
-                
+
                 // bytes
                 for j in 0..8 {
                     // bits
@@ -118,12 +132,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                         match dir {
                             EncoderDirection::Left => {
                                 volume = volume.saturating_sub(1);
-                            },
+                            }
                             EncoderDirection::Right => {
                                 if volume < 127 {
                                     volume += 1;
                                 }
-                            },
+                            }
                             EncoderDirection::Unchanged => {}
                         }
                         let msg = MidiMessage::Controller {
@@ -131,6 +145,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             value: volume.into(),
                         };
                         send_midi(&mut midi_conn, msg);
+                        display.clear(BinaryColor::Off)?;
                     }
 
                     if lights.button_has_light(button) {
@@ -156,7 +171,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let midi_val = slider_val as u32 * 127 / 200;
                 let msg = MidiMessage::Controller {
                     controller: 1.into(),
-                    value: (midi_val as u8).into()
+                    value: (midi_val as u8).into(),
                 };
                 send_midi(&mut midi_conn, msg);
 
@@ -223,7 +238,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     PadEventType::Aftertouch => Some(MidiMessage::Aftertouch {
                         key: *note,
                         vel: velocity.into(),
-                    })
+                    }),
                 };
 
                 if let Some(msg) = event {

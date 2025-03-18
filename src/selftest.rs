@@ -1,21 +1,15 @@
-use std::{thread, time};
-use hidapi::{HidDevice, HidResult};
-use crate::font::Font;
+use embedded_graphics::draw_target::Clipped;
 use crate::lights::{Brightness, Lights, PadColors};
+use embedded_graphics::pixelcolor::BinaryColor;
+use embedded_graphics::prelude::*;
+use embedded_graphics::primitives::{PrimitiveStyle, Rectangle};
+use embedded_graphics::Drawable;
+use hidapi::{HidDevice, HidResult};
 use crate::screen::Screen;
 
-pub fn self_test(device: &HidDevice, screen: &mut Screen, lights: &mut Lights) -> HidResult<()> {
-    Font::write_digit(screen, 0, 0, 1, 4);
-    screen.write(device)?;
-    thread::sleep(time::Duration::from_millis(100));
-    Font::write_digit(screen, 0, 32, 3, 4);
-    screen.write(device)?;
-    thread::sleep(time::Duration::from_millis(100));
-    Font::write_digit(screen, 0, 64, 3, 4);
-    screen.write(device)?;
-    thread::sleep(time::Duration::from_millis(100));
-    Font::write_digit(screen, 0, 96, 7, 4);
-    screen.write(device)?;
+pub fn self_test(device: &HidDevice, display: &mut Clipped<Screen>, lights: &mut Lights) -> HidResult<()> {
+    Rectangle::new(Point::new(0, 0), Size::new(128, 16)).into_styled(PrimitiveStyle::with_fill(BinaryColor::On)).draw(display)?;
+    Rectangle::new(Point::new(0, 16), Size::new(128, 16)).into_styled(PrimitiveStyle::with_fill(BinaryColor::Off)).draw(display)?;
 
     for i in 0..39 {
         lights.set_button(num::FromPrimitive::from_u32(i).unwrap(), Brightness::Bright);
@@ -51,8 +45,7 @@ pub fn self_test(device: &HidDevice, screen: &mut Screen, lights: &mut Lights) -
     lights.reset();
     lights.write(device)?;
 
-    screen.reset();
-    screen.write(device)?;
-
+    display.clear(BinaryColor::Off)?;
+    
     Ok(())
 }
