@@ -15,16 +15,18 @@ use embedded_graphics::primitives::Rectangle;
 use embedded_graphics_framebuf::FrameBuf;
 use enumset::EnumSet;
 use lights::{Brightness, Lights, PadColors};
-use log::debug;
+use log::{debug, info};
 use midi_utils::{init_midi_mapping, midi_to_note, send_midi};
 use midir::os::unix::VirtualOutput;
 use midir::MidiOutput;
 use midly::MidiMessage;
-use screen::{Screen, render_info_screen, render_volume_screen};
+use mio::{Events, Interest, Poll, Token};
+use screen::{render_info_screen, render_volume_screen, Screen};
 use selftest::self_test;
 use settings::Settings;
 use std::collections::HashMap;
 use std::error::Error;
+use udev::EventType;
 
 fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
@@ -61,13 +63,59 @@ fn main() -> Result<(), Box<dyn Error>> {
         (15, 4),
     ]);
 
-    let output = MidiOutput::new("Maschine Mikro MK3").expect("Couldn't open MIDI output");
-    let mut midi_conn = output
-        .create_virtual("Maschine Mikro MK3 MIDI Out")
-        .expect("Couldn't create virtual port");
-
-    let api = hidapi::HidApi::new()?;
+    let mut api = hidapi::HidApi::new()?;
     let (vid, pid) = (0x17cc, 0x1700);
+
+    let mut device_present = false;
+    api.refresh_devices()?;
+    for device in api.device_list() {
+        if device.vendor_id() == vid && device.product_id() == pid {
+            device_present = true;
+        }
+    }
+
+    if !device_present {
+        info!("Device not present. Waiting...");
+
+        let mut socket = udev::MonitorBuilder::new()?
+            .match_subsystem_devtype("usb", "usb_device")?
+            .listen()?;
+
+        let mut poll = Poll::new()?;
+        let mut events = Events::with_capacity(1024);
+
+        poll.registry().register(
+            &mut socket,
+            Token(0),
+            Interest::READABLE | Interest::WRITABLE,
+        )?;
+
+        loop {
+            let mut found = false;
+            poll.poll(&mut events, None)?;
+
+            for event in &events {
+                if event.token() == Token(0) && event.is_writable() {
+                    socket.iter().for_each(|x| {
+                        if x.event_type() == EventType::Bind
+                            && x.device()
+                                .property_value("ID_USB_MODEL")
+                                .map_or("", |s| s.to_str().unwrap_or(""))
+                                == "Maschine_Mikro_MK3"
+                        {
+                            info!("Device found.");
+                            found = true;
+                        }
+                    });
+                }
+            }
+            if found {
+                break;
+            }
+        }
+    }
+
+    info!("Opening device...");
     let device = api.open(vid, pid)?;
 
     device.set_blocking_mode(true)?;
@@ -82,7 +130,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut lights = Lights::new();
 
+    let output = MidiOutput::new("Maschine Mikro MK3").expect("Couldn't open MIDI output");
+    let mut midi_conn = output
+        .create_virtual("Maschine Mikro MK3 MIDI Out")
+        .expect("Couldn't create virtual port");
+
     self_test(&device, &mut display, &mut lights)?;
+
+    info!("Open");
 
     render_info_screen(&mut base_key, &mut fbuf_handle, style);
     let area = Rectangle::new(Point::new(0, 0), fbuf_handle.size());
@@ -178,9 +233,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                 if buttons_pressed.contains(ButtonType::Mute) {
                     debug!("All notes off!");
                     let msg = MidiMessage::Controller {
-                        controller: 123.into(),
+                        controller: 120.into(),
                         value: 0.into(),
                     };
+                    send_midi(&mut midi_conn, msg);
                 }
 
                 // fixed velocity mode
