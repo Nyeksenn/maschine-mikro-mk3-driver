@@ -1,12 +1,53 @@
+use crate::midi_utils::midi_to_note;
 use embedded_graphics::geometry::Dimensions;
-use embedded_graphics::Pixel;
+use embedded_graphics::mono_font::MonoTextStyle;
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::*;
-use embedded_graphics::primitives::{Rectangle};
+use embedded_graphics::primitives::Rectangle;
+use embedded_graphics::text::Text;
+use embedded_graphics::Pixel;
+use embedded_graphics_framebuf::FrameBuf;
 use hidapi::{HidDevice, HidError, HidResult};
 
 const HEADER_HI: [u8; 9] = [0xe0, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x02, 0x00];
 const HEADER_LO: [u8; 9] = [0xe0, 0x00, 0x00, 0x02, 0x00, 0x80, 0x00, 0x02, 0x00];
+
+pub fn render_info_screen(
+    base_key: &mut u8,
+    fbuf_handle: &mut FrameBuf<BinaryColor, &mut [BinaryColor; 4096]>,
+    style: MonoTextStyle<BinaryColor>,
+) {
+    fbuf_handle.clear(BinaryColor::Off).expect("This can't fail");
+    Text::new("MIDI Mode", Point::new(8, 10), style)
+        .draw(fbuf_handle)
+        .expect("This can't fail");
+    Text::new(
+        &format!("Base Key: {}", midi_to_note(*base_key)),
+        Point::new(8, 28),
+        style,
+    )
+    .draw(fbuf_handle)
+    .expect("This can't fail");
+}
+
+pub fn render_volume_screen(
+    volume: u8,
+    fbuf_handle: &mut FrameBuf<BinaryColor, &mut [BinaryColor; 4096]>,
+    style: MonoTextStyle<BinaryColor>,
+) {
+    fbuf_handle.clear(BinaryColor::Off).expect("This can't fail");
+    Text::new("MIDI Mode", Point::new(8, 10), style)
+        .draw(fbuf_handle)
+        .expect("This can't fail");
+    Text::new(
+        &format!("Volume: {}", volume),
+        Point::new(8, 28),
+        style,
+    )
+        .draw(fbuf_handle)
+        .expect("This can't fail");
+}
+
 
 pub struct Screen<'a> {
     buffer: [u8; 512],
@@ -17,7 +58,7 @@ impl Screen<'_> {
     pub fn new(device: &HidDevice) -> Screen {
         Screen {
             buffer: [0xff; 512],
-            device
+            device,
         }
     }
 
@@ -32,8 +73,10 @@ impl Screen<'_> {
     }
 
     fn write(&self) -> HidResult<()> {
-        self.device.write(&[&HEADER_HI, &self.buffer[..256]].concat())?;
-        self.device.write(&[&HEADER_LO, &self.buffer[256..]].concat())?;
+        self.device
+            .write(&[&HEADER_HI, &self.buffer[..256]].concat())?;
+        self.device
+            .write(&[&HEADER_LO, &self.buffer[256..]].concat())?;
         Ok(())
     }
 
@@ -55,9 +98,12 @@ impl Screen<'_> {
 impl Dimensions for Screen<'_> {
     fn bounding_box(&self) -> Rectangle {
         Rectangle {
-            top_left: Point{ x: 0, y: 0},
+            top_left: Point { x: 0, y: 0 },
 
-            size: Size{width: 128, height: 32},
+            size: Size {
+                width: 128,
+                height: 32,
+            },
         }
     }
 }
@@ -68,7 +114,7 @@ impl DrawTarget for Screen<'_> {
 
     fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
     where
-        I: IntoIterator<Item=Pixel<Self::Color>>
+        I: IntoIterator<Item = Pixel<Self::Color>>,
     {
         for Pixel(coord, color) in pixels.into_iter() {
             self.set_pixel(coord, color);

@@ -7,14 +7,16 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-hidapi = "*"
-alsa = "<0.6.0"
-num = "*"
-num-derive = "*"
-num-traits = "*"
+hidapi = "2.6.3"
+num = "0.4.3"
+num-derive = "0.4.2"
+num-traits = "0.2.19"
 midly = "0.5.3"
 midir = { version = "0.10.1", features = ["default", "jack"] }
 config = "0.15.11"
 serde = { version = "1.0", features = ["derive"] }
 embedded-graphics = "0.8.1"
 embedded-graphics-framebuf = "0.5.0"
+enumset = "1.1.5"
+env_logger = "0.11.7"
+log = "0.4.26"

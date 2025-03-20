@@ -5,6 +5,7 @@ use serde::{Deserialize};
 #[allow(unused)]
 pub(crate) struct Main {
     pub base_key: String,
+    pub use_aftertouch: bool
 }
 
 #[derive(Debug, Deserialize)]

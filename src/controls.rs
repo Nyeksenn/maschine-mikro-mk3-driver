@@ -1,7 +1,8 @@
+use enumset::EnumSetType;
 use num_derive::FromPrimitive;
 
-#[derive(FromPrimitive, Debug, Clone, Copy, PartialEq)]
-pub enum ButtonType {
+#[derive(FromPrimitive, Debug, EnumSetType)]
+pub(crate) enum ButtonType {
     Maschine = 0,
     Star = 1,
     Browse = 2,
@@ -34,7 +35,7 @@ pub enum ButtonType {
 
     Stop = 24,
     Shift = 25,
-    FixedVol = 26,
+    FixedVelocity = 26,
     PadMode = 27,
 
     Keyboard = 28,

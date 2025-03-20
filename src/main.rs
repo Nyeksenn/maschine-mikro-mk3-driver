@@ -1,51 +1,46 @@
 mod controls;
 mod font;
 mod lights;
+mod midi_utils;
 mod screen;
 mod selftest;
 mod settings;
 
 use controls::{get_encoder_dir, ButtonType, EncoderDirection, PadEventType};
+use embedded_graphics::mono_font::ascii::FONT_9X15;
+use embedded_graphics::mono_font::MonoTextStyle;
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::*;
+use embedded_graphics::primitives::Rectangle;
+use embedded_graphics_framebuf::FrameBuf;
+use enumset::EnumSet;
 use lights::{Brightness, Lights, PadColors};
+use log::debug;
+use midi_utils::{init_midi_mapping, midi_to_note, send_midi};
 use midir::os::unix::VirtualOutput;
-use midir::{MidiOutput, MidiOutputConnection};
-use midly::{live::LiveEvent, num::u7, MidiMessage};
-use screen::Screen;
+use midir::MidiOutput;
+use midly::MidiMessage;
+use screen::{Screen, render_info_screen, render_volume_screen};
 use selftest::self_test;
 use settings::Settings;
 use std::collections::HashMap;
 use std::error::Error;
-use embedded_graphics::mono_font::ascii::{FONT_9X15};
-use embedded_graphics::mono_font::MonoTextStyle;
-use embedded_graphics::primitives::Rectangle;
-use embedded_graphics::text::Text;
-use embedded_graphics_framebuf::FrameBuf;
-
-fn send_midi(conn: &mut MidiOutputConnection, msg: MidiMessage) {
-    let l_ev = LiveEvent::Midi {
-        channel: 0.into(),
-        message: msg,
-    };
-    let mut buf = Vec::new();
-    let write_result = l_ev.write(&mut buf);
-    if write_result.is_ok() {
-        let _ = conn.send(&buf[..]);
-    }
-}
 
 fn main() -> Result<(), Box<dyn Error>> {
+    env_logger::init();
+
     let settings = Settings::new()?;
-    let base_key: u8 = settings.main.base_key.parse()?;
+    let mut base_key: u8 = settings.main.base_key.parse()?;
+    let use_aftertouch: bool = settings.main.use_aftertouch;
+    let mut fixed_velocity = false;
+
+    debug!("Aftertouch: {}", use_aftertouch);
+
     let mut encoder_pos: u8 = 200;
     let mut volume: u8 = 100;
 
-    let mut key_map: Vec<u7> = Vec::with_capacity(16);
-    for i in 0..16u8 {
-        let key_num = base_key + i;
-        key_map.insert(i as usize, key_num.into());
-    }
+    let mut key_map: Vec<u8> = Vec::with_capacity(16);
+    init_midi_mapping(&base_key, &mut key_map);
 
     let pad_map = HashMap::from([
         (0, 13),
@@ -75,7 +70,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (vid, pid) = (0x17cc, 0x1700);
     let device = api.open(vid, pid)?;
 
-    device.set_blocking_mode(false)?;
+    device.set_blocking_mode(true)?;
 
     let mut screen = Screen::new(&device);
     let mut display = screen.clipped(&screen.bounding_box());
@@ -89,27 +84,30 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     self_test(&device, &mut display, &mut lights)?;
 
-    Text::new("MIDI Mode", Point::new(8, 10), style).draw(&mut fbuf_handle)?;
-    Text::new("Base Key: C2", Point::new(8, 28), style).draw(&mut fbuf_handle)?;
+    render_info_screen(&mut base_key, &mut fbuf_handle, style);
     let area = Rectangle::new(Point::new(0, 0), fbuf_handle.size());
     display.fill_contiguous(&area, *fbuf_handle.data)?;
 
     let mut buf = [0u8; 64];
     loop {
-        let size = device.read_timeout(&mut buf, 10)?;
-        if size < 1 {
-            continue;
-        }
+        device.read(&mut buf)?;
+        // if size < 1 {
+        //     continue;
+        // }
 
-        let mut changed_lights = false;
-
+        let mut lights_dirty = false;
+        let mut screen_dirty = false;
         let encoder_val = buf[7];
+
+        // it can't be 200 from the device so 200 means unset
         if encoder_pos == 200 {
             encoder_pos = encoder_val;
         }
 
         if buf[0] == 0x01 {
             // button mode
+            let mut buttons_pressed: EnumSet<ButtonType> = EnumSet::new();
+
             for i in 0..6 {
                 // every i is a different button
 
@@ -124,28 +122,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                     };
                     let status = buf[i + 1] & (1 << j);
                     let status = status > 0;
-                    // if status {
-                    //     println!("Button: {:?}", button);
-                    // }
-
-                    if button == ButtonType::EncoderTouch {
-                        let dir = get_encoder_dir(encoder_pos, encoder_val);
-                        match dir {
-                            EncoderDirection::Left => {
-                                volume = volume.saturating_sub(1);
-                            }
-                            EncoderDirection::Right => {
-                                if volume < 127 {
-                                    volume += 1;
-                                }
-                            }
-                            EncoderDirection::Unchanged => {}
-                        }
-                        let msg = MidiMessage::Controller {
-                            controller: 7.into(),
-                            value: volume.into(),
-                        };
-                        send_midi(&mut midi_conn, msg);
+                    if status {
+                        debug!("Button: {:?}", button);
+                        buttons_pressed.insert(button);
                     }
 
                     if lights.button_has_light(button) {
@@ -159,14 +138,86 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     Brightness::Off
                                 },
                             );
-                            changed_lights = true;
+                            lights_dirty = true;
                         }
+                    }
+                }
+            }
+
+            if buttons_pressed.len() == 1 {
+                // actions triggered by only one button
+
+                // volume control
+                if buttons_pressed.contains(ButtonType::EncoderTouch) {
+                    debug!("Encoder value: {}", encoder_val);
+                    let dir = get_encoder_dir(encoder_pos, encoder_val);
+                    match dir {
+                        EncoderDirection::Left => {
+                            volume = volume.saturating_sub(1);
+                            render_volume_screen(volume, &mut fbuf_handle, style);
+                            screen_dirty = true;
+                        }
+                        EncoderDirection::Right => {
+                            if volume < 127 {
+                                volume += 1;
+                                render_volume_screen(volume, &mut fbuf_handle, style);
+                                screen_dirty = true;
+                            }
+                        }
+                        EncoderDirection::Unchanged => {}
+                    }
+                    let msg = MidiMessage::Controller {
+                        controller: 7.into(),
+                        value: volume.into(),
+                    };
+                    debug!("Set Volume to: {}", volume);
+                    send_midi(&mut midi_conn, msg);
+                }
+
+                // all notes off control
+                if buttons_pressed.contains(ButtonType::Mute) {
+                    debug!("All notes off!");
+                    let msg = MidiMessage::Controller {
+                        controller: 123.into(),
+                        value: 0.into(),
+                    };
+                }
+
+                // fixed velocity mode
+                if buttons_pressed.contains(ButtonType::FixedVelocity) {
+                    fixed_velocity = !fixed_velocity;
+                }
+            }
+
+            if buttons_pressed.len() == 2 {
+                // actions triggered by two buttons
+                if buttons_pressed.contains(ButtonType::EncoderTouch)
+                    && buttons_pressed.contains(ButtonType::Maschine)
+                {
+                    let dir = get_encoder_dir(encoder_pos, encoder_val);
+                    match dir {
+                        EncoderDirection::Left => {
+                            base_key = base_key.saturating_sub(1);
+                            init_midi_mapping(&base_key, &mut key_map);
+                            render_info_screen(&mut base_key, &mut fbuf_handle, style);
+                            screen_dirty = true;
+                        }
+                        EncoderDirection::Right => {
+                            if base_key < 127 {
+                                base_key += 1;
+                            }
+                            init_midi_mapping(&base_key, &mut key_map);
+                            render_info_screen(&mut base_key, &mut fbuf_handle, style);
+                            screen_dirty = true;
+                        }
+                        EncoderDirection::Unchanged => {}
                     }
                 }
             }
 
             let slider_val = buf[10];
             if slider_val != 0 {
+                debug!("Slider value: {}", slider_val);
                 let midi_val = slider_val as u32 * 127 / 200;
                 let msg = MidiMessage::Controller {
                     controller: 1.into(),
@@ -183,7 +234,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     };
                     lights.set_slider(i as usize, b);
                 }
-                changed_lights = true;
+                lights_dirty = true;
             }
         }
 
@@ -203,8 +254,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                     PadEventType::NoteOn | PadEventType::PressOn => Brightness::Normal,
                     PadEventType::NoteOff | PadEventType::PressOff => Brightness::Off,
                     PadEventType::Aftertouch => {
-                        if val > 0 {
-                            Brightness::Normal
+                        if use_aftertouch {
+                            if val > 0 {
+                                Brightness::Normal
+                            } else {
+                                Brightness::Off
+                            }
                         } else {
                             Brightness::Off
                         }
@@ -213,31 +268,60 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                 if prev_b != b {
                     lights.set_pad(idx as usize, PadColors::Blue, b);
-                    changed_lights = true;
+                    lights_dirty = true;
                 }
 
                 let pad_num = pad_map[&idx];
-                let note = key_map
+                let note = *key_map
                     .get(pad_num - 1)
-                    .ok_or("Couldn't find key for pad")?;
-                let mut velocity = (val >> 5) as u8;
-                if val > 0 && velocity == 0 {
-                    velocity = 1;
+                    .expect("Didn't find note for pad. This should never happen");
+                let mut velocity = 127;
+
+                if !fixed_velocity {
+                    velocity = (val >> 5) as u8;
+                    if val > 0 && velocity == 0 {
+                        velocity = 1;
+                    }
                 }
 
                 let event = match pad_evt {
-                    PadEventType::NoteOn | PadEventType::PressOn => Some(MidiMessage::NoteOn {
-                        key: *note,
-                        vel: velocity.into(),
-                    }),
-                    PadEventType::NoteOff | PadEventType::PressOff => Some(MidiMessage::NoteOff {
-                        key: *note,
-                        vel: velocity.into(),
-                    }),
-                    PadEventType::Aftertouch => Some(MidiMessage::Aftertouch {
-                        key: *note,
-                        vel: velocity.into(),
-                    }),
+                    PadEventType::NoteOn | PadEventType::PressOn => {
+                        debug!(
+                            "Pad On with note: {}, velocity: {}",
+                            midi_to_note(note),
+                            velocity
+                        );
+                        Some(MidiMessage::NoteOn {
+                            key: note.into(),
+                            vel: velocity.into(),
+                        })
+                    }
+                    PadEventType::NoteOff | PadEventType::PressOff => {
+                        debug!(
+                            "Pad Off with note: {}, velocity: {}",
+                            midi_to_note(note),
+                            velocity
+                        );
+                        Some(MidiMessage::NoteOff {
+                            key: note.into(),
+                            vel: velocity.into(),
+                        })
+                    }
+                    PadEventType::Aftertouch => {
+                        if use_aftertouch {
+                            debug!(
+                                "Aftertouch with note: {}, velocity: {}",
+                                midi_to_note(note),
+                                velocity
+                            );
+                            Some(MidiMessage::Aftertouch {
+                                key: note.into(),
+                                vel: velocity.into(),
+                            })
+                        } else {
+                            None
+                        }
+                    }
                 };
 
                 if let Some(msg) = event {
@@ -246,8 +330,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        if changed_lights {
+        if lights_dirty {
             lights.write(&device)?;
+        }
+
+        if screen_dirty {
+            let area = Rectangle::new(Point::new(0, 0), fbuf_handle.size());
+            display.fill_contiguous(&area, *fbuf_handle.data)?;
         }
 
         encoder_pos = encoder_val;
