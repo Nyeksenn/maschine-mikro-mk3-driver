@@ -1,5 +1,4 @@
 mod controls;
-mod font;
 mod lights;
 mod midi_utils;
 mod screen;

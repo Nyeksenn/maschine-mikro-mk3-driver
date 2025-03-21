@@ -1,0 +1,12 @@
+[Unit]
+Description=Userspace Driver for Maschine Mikro MK3
+After=multi-user.target
+
+[Service]
+ExecStart=/home/cleal/.local/bin/apparat
+Restart=always
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=default.target
+
