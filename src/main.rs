@@ -2,8 +2,8 @@ mod controls;
 mod lights;
 mod midi_utils;
 mod screen;
-mod selftest;
 mod settings;
+mod device;
 
 use controls::{get_encoder_dir, ButtonType, EncoderDirection, PadEventType};
 use embedded_graphics::mono_font::ascii::FONT_9X15;
@@ -21,11 +21,12 @@ use midir::MidiOutput;
 use midly::MidiMessage;
 use mio::{Events, Interest, Poll, Token};
 use screen::{render_info_screen, render_volume_screen, Screen};
-use selftest::self_test;
 use settings::Settings;
 use std::collections::HashMap;
 use std::error::Error;
+use hidapi::HidApi;
 use udev::EventType;
+use device::{Maschine, wait_for_device};
 
 fn main() -> Result<(), Box<dyn Error>> {
     env_logger::init();
@@ -65,54 +66,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut api = hidapi::HidApi::new()?;
     let (vid, pid) = (0x17cc, 0x1700);
 
-    let mut device_present = false;
-    api.refresh_devices()?;
-    for device in api.device_list() {
-        if device.vendor_id() == vid && device.product_id() == pid {
-            device_present = true;
-        }
-    }
-
-    if !device_present {
-        info!("Device not present. Waiting...");
-
-        let mut socket = udev::MonitorBuilder::new()?
-            .match_subsystem_devtype("usb", "usb_device")?
-            .listen()?;
-
-        let mut poll = Poll::new()?;
-        let mut events = Events::with_capacity(1024);
-
-        poll.registry().register(
-            &mut socket,
-            Token(0),
-            Interest::READABLE | Interest::WRITABLE,
-        )?;
-
-        loop {
-            let mut found = false;
-            poll.poll(&mut events, None)?;
-
-            for event in &events {
-                if event.token() == Token(0) && event.is_writable() {
-                    socket.iter().for_each(|x| {
-                        if x.event_type() == EventType::Bind
-                            && x.device()
-                                .property_value("ID_USB_MODEL")
-                                .map_or("", |s| s.to_str().unwrap_or(""))
-                                == "Maschine_Mikro_MK3"
-                        {
-                            info!("Device found.");
-                            found = true;
-                        }
-                    });
-                }
-            }
-            if found {
-                break;
-            }
-        }
-    }
+    wait_for_device(&mut api, vid, pid)?;
 
     info!("Opening device...");
     let device = api.open(vid, pid)?;
@@ -129,22 +83,30 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut lights = Lights::new();
 
+    let mut maschine = Maschine {
+        vid,
+        pid,
+        device: &device,
+        display,
+        lights
+    };
+
+    maschine.init()?;
+
     let output = MidiOutput::new("Maschine Mikro MK3").expect("Couldn't open MIDI output");
     let mut midi_conn = output
         .create_virtual("Maschine Mikro MK3 MIDI Out")
         .expect("Couldn't create virtual port");
 
-    self_test(&device, &mut display, &mut lights)?;
-
     info!("Open");
 
     render_info_screen(&mut base_key, &mut fbuf_handle, style);
     let area = Rectangle::new(Point::new(0, 0), fbuf_handle.size());
-    display.fill_contiguous(&area, *fbuf_handle.data)?;
+    maschine.display.fill_contiguous(&area, *fbuf_handle.data)?;
 
     let mut buf = [0u8; 64];
     loop {
-        device.read(&mut buf)?;
+        maschine.device.read(&mut buf)?;
         // if size < 1 {
         //     continue;
         // }
@@ -174,22 +136,22 @@ fn main() -> Result<(), Box<dyn Error>> {
                         Some(val) => val,
                         None => continue,
                     };
-                    let status = buf[i + 1] & (1 << j);
-                    let status = status > 0;
-                    if status {
+                    let pressed_u8 = buf[i + 1] & (1 << j);
+                    let pressed = pressed_u8 > 0;
+                    if pressed {
                         debug!("Button: {:?}", button);
                         buttons_pressed.insert(button);
                     }
 
-                    if lights.button_has_light(button) {
-                        let light_status = lights.get_button(button) != Brightness::Off;
-                        if status != light_status {
-                            lights.set_button(
+                    if maschine.lights.button_has_light(button) {
+                        let lights_on = maschine.lights.get_button(button) == Brightness::Bright;
+                        if pressed != lights_on {
+                            maschine.lights.set_button(
                                 button,
-                                if status {
-                                    Brightness::Normal
+                                if pressed {
+                                    Brightness::Bright
                                 } else {
-                                    Brightness::Off
+                                    Brightness::Dim
                                 },
                             );
                             lights_dirty = true;
@@ -287,7 +249,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         1..=25 => Brightness::Dim,
                         _ => Brightness::Off,
                     };
-                    lights.set_slider(i as usize, b);
+                    maschine.lights.set_slider(i as usize, b);
                 }
                 lights_dirty = true;
             }
@@ -304,25 +266,25 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
                 let pad_evt: PadEventType =
                     num::FromPrimitive::from_u8(evt).ok_or("Couldn't read pad event type")?;
-                let (_, prev_b) = lights.get_pad(idx as usize);
+                let (_, prev_b) = maschine.lights.get_pad(idx as usize);
                 let b = match pad_evt {
-                    PadEventType::NoteOn | PadEventType::PressOn => Brightness::Normal,
-                    PadEventType::NoteOff | PadEventType::PressOff => Brightness::Off,
+                    PadEventType::NoteOn | PadEventType::PressOn => Brightness::Bright,
+                    PadEventType::NoteOff | PadEventType::PressOff => Brightness::Dim,
                     PadEventType::Aftertouch => {
                         if use_aftertouch {
                             if val > 0 {
-                                Brightness::Normal
+                                Brightness::Bright
                             } else {
-                                Brightness::Off
+                                Brightness::Dim
                             }
                         } else {
-                            Brightness::Off
+                            Brightness::Dim
                         }
                     }
                 };
 
                 if prev_b != b {
-                    lights.set_pad(idx as usize, PadColors::Blue, b);
+                    maschine.lights.set_pad(idx as usize, PadColors::Plum, b);
                     lights_dirty = true;
                 }
 
@@ -386,12 +348,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
 
         if lights_dirty {
-            lights.write(&device)?;
+            maschine.lights.write(&device)?;
         }
 
         if screen_dirty {
             let area = Rectangle::new(Point::new(0, 0), fbuf_handle.size());
-            display.fill_contiguous(&area, *fbuf_handle.data)?;
+            maschine.display.fill_contiguous(&area, *fbuf_handle.data)?;
         }
 
         encoder_pos = encoder_val;
